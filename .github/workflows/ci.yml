@@ -1,0 +1,91 @@
+name: Skills CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  validate-skills:
+    name: Validate SKILL.md frontmatter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Validate skills
+        run: python .github/scripts/validate_skills.py
+
+  test-skills:
+    name: Test skill scripts
+    runs-on: ubuntu-latest
+    needs: validate-skills
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run skill demos
+        run: |
+          found=0
+          for skill_dir in .claude/skills/*/; do
+            name=$(basename "$skill_dir")
+
+            # Skip cookie-cutter template
+            if [ "$name" = "cookie-cutter" ]; then
+              echo "SKIP $name (cookie-cutter template)"
+              continue
+            fi
+
+            # Look for Python scripts with demo mode
+            for script in "$skill_dir"scripts/*.py; do
+              [ -f "$script" ] || continue
+              echo "RUNNING $script --demo"
+              python "$script" --demo || echo "WARN: $script demo failed (non-blocking)"
+              found=1
+            done
+          done
+
+          if [ "$found" -eq 0 ]; then
+            echo "No skill scripts found to test. Skipping."
+          fi
+
+  scaffold:
+    name: Scaffold new skill directories
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: validate-skills
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run scaffolding
+        id: scaffold
+        run: |
+          python .github/scripts/scaffold_skill.py
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Commit scaffolded directories
+        if: steps.scaffold.outputs.exit_code == '2'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .claude/skills/
+          git commit -m "ci: scaffold missing skill subdirectories"
+          git push
